@@ -1,3 +1,7 @@
+# Ignore everything under the Input folder
+input/**
+output/**
+
 # Ignore Python cache files
 __pycache__/
 *.py[cod]
@@ -61,9 +65,6 @@ terraform/*.override.tf.json
 # Ignore GitHub CLI authentication cache
 .gh/
 
-# Ignore everything under the Input folder
-Input/**
-Output/**
 
 # Additional Python-specific ignores
 *.pyc
