@@ -1,7 +1,7 @@
 # -------------------------------------------------------------------------
 # Program: main.tf
 # Description: Deploy Azure AI Foundry account with GPT-4o for
-#              production-grade document commentary inference
+#              production-grade document revision inference
 # Context: DocumentWriter project - Azure AI Foundry for production-grade inference
 # Author: Greg Tate
 # Date: 2026-03-02
@@ -17,7 +17,7 @@ locals {
   common_tags = {
     Environment      = "Production"
     Project          = "DocumentWriter"
-    Purpose          = "AI Document Commentary"
+    Purpose          = "AI Document Revision"
     Owner            = var.owner
     DateCreated      = var.date_created
     DeploymentMethod = "Terraform"

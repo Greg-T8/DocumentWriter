@@ -1,12 +1,12 @@
 <#
 .SYNOPSIS
-Add AI-generated commentary to a Word document using GitHub Models or Azure OpenAI.
+Revise a Word document using AI analysis from GitHub Models or Azure OpenAI.
 
 .DESCRIPTION
 Reads a Word (.docx) file, extracts its section outline and embedded
 screenshots via a Python helper, sends each section (with images) to a
-chat completions endpoint for analysis, and writes the commentary back
-into the document as styled annotation paragraphs.
+chat completions endpoint for analysis, and revises the document based
+on AI-generated suggestions.
 
 Supports two providers:
   - GitHub  : Uses GitHub Models (models.inference.ai.azure.com) with a
@@ -16,7 +16,7 @@ Supports two providers:
               throughput and token limits.
 
 .CONTEXT
-DocumentWriter project - AI-powered document review.
+DocumentWriter project - AI-powered document revision.
 
 .AUTHOR
 Greg Tate

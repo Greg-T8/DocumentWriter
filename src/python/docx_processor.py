@@ -1,19 +1,19 @@
 # -------------------------------------------------------------------------
 # Program: docx_processor.py
-# Description: Extract sections/images from a Word document and insert
-#              AI-generated commentary back into the document.
+# Description: Extract sections/images from a Word document and revise
+#              the document based on AI analysis.
 # Context: DocumentWriter project - GitHub Models integration
 # Author: Greg Tate
 # -------------------------------------------------------------------------
 
 """
 Processes Word (.docx) documents: extracts section outlines and embedded
-images for AI analysis, and inserts generated commentary paragraphs back
-into the document.
+images for AI analysis, and revises the document based on AI-generated
+suggestions.
 
 Usage:
     python docx_processor.py extract <docx_path> <output_json>
-    python docx_processor.py insert  <docx_path> <commentary_json> <output_docx>
+    python docx_processor.py revise  <docx_path> <analysis_json> <output_docx>
 """
 
 #region IMPORTS
@@ -33,7 +33,7 @@ from PIL import Image
 #region MAIN WORKFLOW
 def main() -> None:
     """
-    Main entry point - dispatches to extract or insert based on CLI args.
+    Main entry point - dispatches to extract or revise based on CLI args.
     """
     validate_argument(sys.argv)
 
@@ -42,8 +42,8 @@ def main() -> None:
 
     if command == "extract":
         run_extract(sys.argv[2], sys.argv[3])
-    elif command == "insert":
-        run_insert(sys.argv[2], sys.argv[3], sys.argv[4])
+    elif command == "revise":
+        run_revise(sys.argv[2], sys.argv[3], sys.argv[4])
 #endregion
 
 

@@ -39,6 +39,6 @@ output "model_deployment_name" {
 # =========================================================================
 
 output "script_usage" {
-  description = "Example command to run Invoke-DocumentCommentary with Azure provider"
-  value       = "Invoke-DocumentCommentary.ps1 -DocumentPath <file.docx> -Provider Azure -AzureEndpoint '${azurerm_cognitive_account.ai_foundry.endpoint}' -AzureDeployment '${azurerm_cognitive_deployment.model.name}'"
+  description = "Example command to run Invoke-DocumentRevision with Azure provider"
+  value       = "Invoke-DocumentRevision.ps1 -DocumentPath <file.docx> -Provider Azure -AzureEndpoint '${azurerm_cognitive_account.ai_foundry.endpoint}' -AzureDeployment '${azurerm_cognitive_deployment.model.name}'"
 }
