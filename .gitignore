@@ -1,0 +1,47 @@
+# Ignore Python cache files
+__pycache__/
+*.py[cod]
+
+# Ignore virtual environments
+venv/
+.env/
+
+# Ignore temporary files
+*.tmp
+*.log
+*.bak
+*.swp
+*.swo
+
+# Ignore Python dependency files
+pip-log.txt
+dist/
+build/
+*.egg-info/
+
+# Ignore PowerShell temporary files
+*.ps1xml
+*.psm1xml
+*.pssc
+*.psd1
+*.psm1
+*.ps1~
+
+# Ignore temporary directories
+.docwriter_temp/
+
+# Ignore system files
+.DS_Store
+Thumbs.db
+
+# Ignore IDE/editor settings
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Ignore GitHub CLI authentication cache
+.gh/
+
+# Ignore everything under the Input folder
+Input/**
