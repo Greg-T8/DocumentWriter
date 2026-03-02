@@ -34,6 +34,24 @@ build/
 .DS_Store
 Thumbs.db
 
+# Ignore Terraform state and sensitive files
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/.terraform/
+terraform/terraform.tfvars
+terraform/*.auto.tfvars
+terraform/crash.log
+terraform/tfplan
+
+# Ignore Terraform lock files
+terraform/.terraform.lock.hcl
+
+# Ignore Terraform override files
+terraform/override.tf
+terraform/override.tf.json
+terraform/*.override.tf
+terraform/*.override.tf.json
+
 # Ignore IDE/editor settings
 .vscode/
 .idea/
