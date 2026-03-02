@@ -4,7 +4,8 @@ Invoke document commentary from the repository root entry point.
 
 .DESCRIPTION
 Provides a backward-compatible entry point and forwards parameters to the
-implementation script in the scripts folder.
+implementation script in the scripts folder. Supports both GitHub Models
+and Azure OpenAI providers.
 
 .CONTEXT
 DocumentWriter project - root launcher for document commentary.
@@ -22,14 +23,21 @@ param(
     [ValidateScript({ Test-Path $_ -PathType Leaf })]
     [string]$DocumentPath,
 
+    [ValidateSet('GitHub', 'Azure')]
+    [string]$Provider = 'GitHub',
+
     [string]$Model = 'openai/gpt-4o',
+
+    [string]$AzureEndpoint,
+
+    [string]$AzureDeployment,
 
     [string]$OutputPath,
 
     [string]$SystemPromptFile = 'Input/SystemPrompt.md',
 
     [ValidateRange(0, 120)]
-    [int]$RequestDelaySeconds = 6,
+    [int]$RequestDelaySeconds = 30,
 
     [string]$PythonExe = 'python'
 )

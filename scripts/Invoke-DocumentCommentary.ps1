@@ -1,15 +1,22 @@
 <#
 .SYNOPSIS
-Add AI-generated commentary to a Word document using GitHub Models.
+Add AI-generated commentary to a Word document using GitHub Models or Azure OpenAI.
 
 .DESCRIPTION
 Reads a Word (.docx) file, extracts its section outline and embedded
 screenshots via a Python helper, sends each section (with images) to a
-GitHub Models endpoint for analysis, and writes the commentary back into
-the document as styled annotation paragraphs.
+chat completions endpoint for analysis, and writes the commentary back
+into the document as styled annotation paragraphs.
+
+Supports two providers:
+  - GitHub  : Uses GitHub Models (models.inference.ai.azure.com) with a
+              GitHub CLI token. Free tier with rate limits.
+  - Azure   : Uses an Azure OpenAI deployment (via AI Foundry) with an
+              Entra ID bearer token from the Azure CLI. Production-grade
+              throughput and token limits.
 
 .CONTEXT
-DocumentWriter project - GitHub Models integration for document review.
+DocumentWriter project - AI-powered document review.
 
 .AUTHOR
 Greg Tate
@@ -24,14 +31,21 @@ param(
     [ValidateScript({ Test-Path $_ -PathType Leaf })]
     [string]$DocumentPath,
 
+    [ValidateSet('GitHub', 'Azure')]
+    [string]$Provider = 'GitHub',
+
     [string]$Model = 'openai/gpt-4o',
+
+    [string]$AzureEndpoint,
+
+    [string]$AzureDeployment,
 
     [string]$OutputPath,
 
     [string]$SystemPromptFile = 'prompts/SystemPrompt.md',
 
     [ValidateRange(0, 120)]
-    [int]$RequestDelaySeconds = 6,
+    [int]$RequestDelaySeconds = 30,
 
     [string]$PythonExe = 'python'
 )
@@ -41,14 +55,16 @@ $ProjectRoot          = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $GitHubModelsEndpoint = 'https://models.inference.ai.azure.com/chat/completions'
 $ProcessorScript      = Join-Path $ProjectRoot 'src/python/docx_processor.py'
 $TempDir              = Join-Path $ProjectRoot '.docwriter_temp'
-$ResolvedGitHubToken  = $null
+$ResolvedToken        = $null
+$ResolvedEndpoint     = $null
+$ResolvedModel        = $null
 $ResolvedSystemPrompt = $null
 
 $Main = {
     . $Helpers
 
     Confirm-Prerequisite
-    Initialize-GitHubAuthentication
+    Initialize-Authentication
     Initialize-SystemPrompt
     $extracted = Export-DocumentSection
     $commentary = Get-SectionCommentary -Sections $extracted.sections
@@ -97,6 +113,17 @@ $Helpers = {
         Write-Verbose "Prerequisites validated."
     }
 
+    function Initialize-Authentication {
+        # Route authentication to the selected provider
+
+        if ($Provider -eq 'Azure') {
+            Initialize-AzureAuthentication
+        }
+        else {
+            Initialize-GitHubAuthentication
+        }
+    }
+
     function Initialize-GitHubAuthentication {
         # Authenticate using GitHub CLI and capture a token for API calls
 
@@ -128,8 +155,64 @@ $Helpers = {
             throw "Unable to retrieve a GitHub token from CLI authentication."
         }
 
-        $script:ResolvedGitHubToken = $token.Trim()
+        $script:ResolvedToken = $token.Trim()
+
+        # Resolve model name for GitHub Models endpoint compatibility
+        $resolvedModel = $Model
+        if ($GitHubModelsEndpoint -like 'https://models.inference.ai.azure.com*' -and $resolvedModel -match '/') {
+            $resolvedModel = $resolvedModel.Split('/')[-1]
+        }
+
+        $script:ResolvedEndpoint = $GitHubModelsEndpoint
+        $script:ResolvedModel    = $resolvedModel
         Write-Verbose "GitHub CLI authentication completed."
+    }
+
+    function Initialize-AzureAuthentication {
+        # Authenticate using Azure CLI and obtain an Entra ID bearer token
+
+        # Validate required Azure parameters
+        if ([string]::IsNullOrWhiteSpace($AzureEndpoint)) {
+            throw "The -AzureEndpoint parameter is required when using the Azure provider."
+        }
+        if ([string]::IsNullOrWhiteSpace($AzureDeployment)) {
+            throw "The -AzureDeployment parameter is required when using the Azure provider."
+        }
+
+        # Verify Azure CLI is installed
+        try {
+            $null = & az --version 2>&1
+        }
+        catch {
+            throw "Azure CLI ('az') was not found. Install it from: https://learn.microsoft.com/cli/azure/install-azure-cli"
+        }
+
+        # Verify Azure CLI login status
+        $accountJson = & az account show 2>$null
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($accountJson)) {
+            Write-Host "Azure CLI is not authenticated. Starting interactive login..." -ForegroundColor Yellow
+            & az login
+
+            if ($LASTEXITCODE -ne 0) {
+                throw "Azure CLI authentication failed. Run 'az login' and try again."
+            }
+        }
+
+        # Obtain a bearer token scoped to Cognitive Services
+        $tokenJson = & az account get-access-token --resource https://cognitiveservices.azure.com --query accessToken -o tsv 2>$null
+
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($tokenJson)) {
+            throw "Unable to retrieve an Azure access token for Cognitive Services."
+        }
+
+        $script:ResolvedToken = $tokenJson.Trim()
+
+        # Build the Azure OpenAI chat completions endpoint URL
+        $baseUrl = $AzureEndpoint.TrimEnd('/')
+        $script:ResolvedEndpoint = "${baseUrl}/openai/deployments/${AzureDeployment}/chat/completions?api-version=2024-12-01-preview"
+        $script:ResolvedModel    = $AzureDeployment
+
+        Write-Verbose "Azure CLI authentication completed. Endpoint: $script:ResolvedEndpoint"
     }
 
     function Initialize-SystemPrompt {
@@ -210,8 +293,8 @@ $Helpers = {
             # Build the prompt content for this section
             $messages = Build-ApiMessage -Section $section
 
-            # Call the GitHub Models API
-            $response = Invoke-GitHubModel -Messages $messages
+            # Call the chat completions API
+            $response = Invoke-ModelApi -Messages $messages
 
             # Extract the commentary text from the response
             $commentaryText = $response.choices[0].message.content
@@ -292,35 +375,136 @@ $Helpers = {
         return $messages
     }
 
-    function Invoke-GitHubModel {
-        # Send a request to the GitHub Models chat completions endpoint
+    function Get-RetryDelayFromHeaders {
+        # Parse server-provided retry headers and return delay + source metadata
+        param(
+            [Parameter(Mandatory)]
+            [object]$ErrorRecord
+        )
+
+        $response = $null
+        if ($ErrorRecord.Exception -and $ErrorRecord.Exception.Response) {
+            $response = $ErrorRecord.Exception.Response
+        }
+
+        if (-not $response -or -not $response.Headers) {
+            return $null
+        }
+
+        $headerMap = @{}
+
+        # Normalize response headers into a case-insensitive hashtable
+        foreach ($name in $response.Headers.Keys) {
+            $rawValue = $response.Headers[$name]
+            if ($rawValue -is [System.Array] -or $rawValue -is [System.Collections.IEnumerable]) {
+                $headerMap[$name.ToLowerInvariant()] = ($rawValue | ForEach-Object { $_.ToString() }) -join ','
+            }
+            else {
+                $headerMap[$name.ToLowerInvariant()] = [string]$rawValue
+            }
+        }
+
+        $candidateDelays = @()
+
+        # Interpret Retry-After as either seconds or an HTTP date
+        if ($headerMap.ContainsKey('retry-after')) {
+            $retryAfter = $headerMap['retry-after']
+
+            $retryAfterSeconds = 0
+            if ([int]::TryParse($retryAfter, [ref]$retryAfterSeconds)) {
+                if ($retryAfterSeconds -gt 0) {
+                    $candidateDelays += [pscustomobject]@{
+                        DelaySeconds = $retryAfterSeconds
+                        Source       = 'retry-after-seconds'
+                    }
+                }
+            }
+            else {
+                $retryAfterDate = [DateTimeOffset]::MinValue
+                if ([DateTimeOffset]::TryParse($retryAfter, [ref]$retryAfterDate)) {
+                    $dateDelay = [int][Math]::Ceiling(($retryAfterDate - [DateTimeOffset]::UtcNow).TotalSeconds)
+                    if ($dateDelay -gt 0) {
+                        $candidateDelays += [pscustomobject]@{
+                            DelaySeconds = $dateDelay
+                            Source       = 'retry-after-date'
+                        }
+                    }
+                }
+            }
+        }
+
+        # Interpret x-ms-retry-after-ms in milliseconds
+        if ($headerMap.ContainsKey('x-ms-retry-after-ms')) {
+            $retryAfterMs = 0
+            if ([int]::TryParse($headerMap['x-ms-retry-after-ms'], [ref]$retryAfterMs)) {
+                $msDelay = [int][Math]::Ceiling($retryAfterMs / 1000.0)
+                if ($msDelay -gt 0) {
+                    $candidateDelays += [pscustomobject]@{
+                        DelaySeconds = $msDelay
+                        Source       = 'x-ms-retry-after-ms'
+                    }
+                }
+            }
+        }
+
+        # Interpret x-ratelimit-reset headers as either epoch time or relative seconds
+        foreach ($headerName in @('x-ratelimit-reset', 'x-ratelimit-reset-requests', 'x-ratelimit-reset-tokens')) {
+            if (-not $headerMap.ContainsKey($headerName)) {
+                continue
+            }
+
+            $resetValue = 0L
+            if (-not [long]::TryParse($headerMap[$headerName], [ref]$resetValue)) {
+                continue
+            }
+
+            $relativeDelay = [int]$resetValue
+
+            if ($resetValue -gt 1000000000) {
+                $epochSeconds = $resetValue
+                if ($resetValue -gt 20000000000) {
+                    $epochSeconds = [long][Math]::Floor($resetValue / 1000.0)
+                }
+
+                $resetAt = [DateTimeOffset]::FromUnixTimeSeconds($epochSeconds)
+                $relativeDelay = [int][Math]::Ceiling(($resetAt - [DateTimeOffset]::UtcNow).TotalSeconds)
+            }
+
+            if ($relativeDelay -gt 0) {
+                $candidateDelays += [pscustomobject]@{
+                    DelaySeconds = $relativeDelay
+                    Source       = $headerName
+                }
+            }
+        }
+
+        if ($candidateDelays.Count -eq 0) {
+            return $null
+        }
+
+        $selected = $candidateDelays | Sort-Object DelaySeconds -Descending | Select-Object -First 1
+        return $selected
+    }
+
+    function Invoke-ModelApi {
+        # Send a request to the configured chat completions endpoint
         param(
             [Parameter(Mandatory)]
             [array]$Messages
         )
 
         # Ensure authentication has already produced a token
-        if ([string]::IsNullOrWhiteSpace($script:ResolvedGitHubToken)) {
-            throw "GitHub token is unavailable. Ensure 'Initialize-GitHubAuthentication' runs before API calls."
+        if ([string]::IsNullOrWhiteSpace($script:ResolvedToken)) {
+            throw "API token is unavailable. Ensure 'Initialize-Authentication' runs before API calls."
         }
 
         $headers = @{
-            'Authorization' = "Bearer $script:ResolvedGitHubToken"
+            'Authorization' = "Bearer $script:ResolvedToken"
             'Content-Type'  = 'application/json'
         }
 
-        # Normalize provider-prefixed model names for Azure endpoint compatibility
-        $resolvedModel = $Model
-        if (
-            $GitHubModelsEndpoint -like 'https://models.inference.ai.azure.com*' `
-            -and $resolvedModel -match '/'
-        ) {
-            $resolvedModel = $resolvedModel.Split('/')[-1]
-            Write-Verbose "Using endpoint-compatible model name: $resolvedModel"
-        }
-
         $body = @{
-            model       = $resolvedModel
+            model       = $script:ResolvedModel
             messages    = $Messages
             temperature = 0.4
             max_tokens  = 500
@@ -333,7 +517,7 @@ $Helpers = {
         for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
             try {
                 $response = Invoke-RestMethod `
-                    -Uri $GitHubModelsEndpoint `
+                    -Uri $script:ResolvedEndpoint `
                     -Method Post `
                     -Headers $headers `
                     -Body $body `
@@ -349,14 +533,30 @@ $Helpers = {
 
                 $errorText = $_.ToString()
                 $serverSuggestedDelay = $null
+                $delaySource = 'exponential-backoff'
+
+                # Prefer explicit server retry headers when available
+                $headerRetryInfo = Get-RetryDelayFromHeaders -ErrorRecord $_
+                if ($headerRetryInfo) {
+                    $serverSuggestedDelay = [int]$headerRetryInfo.DelaySeconds
+                    $delaySource = [string]$headerRetryInfo.Source
+                }
+
+                # Fall back to parsing a delay hint from the response text
                 if ($errorText -match 'Please wait\s+(\d+)\s+seconds') {
-                    $serverSuggestedDelay = [int]$Matches[1]
+                    $messageSuggestedDelay = [int]$Matches[1]
+                    if (-not $serverSuggestedDelay -or $messageSuggestedDelay -gt $serverSuggestedDelay) {
+                        $serverSuggestedDelay = $messageSuggestedDelay
+                        $delaySource = 'response-message'
+                    }
                 }
 
                 if ($serverSuggestedDelay) {
-                    $boundedDelay = [Math]::Min(60, [Math]::Max(3, $serverSuggestedDelay + 1))
+                    $boundedDelay = [Math]::Min(180, [Math]::Max(3, $serverSuggestedDelay + 1))
                     $retryDelay = [Math]::Max($retryDelay, $boundedDelay)
                 }
+
+                Write-Verbose "Retry delay source: $delaySource; next wait: ${retryDelay}s"
 
                 # Retry on rate-limit (429) or server errors (5xx)
                 if ($attempt -lt $maxRetries -and ($statusCode -eq 429 -or $statusCode -ge 500)) {
@@ -365,7 +565,7 @@ $Helpers = {
                     $retryDelay *= 2
                 }
                 else {
-                    throw "GitHub Models API error: $_"
+                    throw "$Provider API error: $_"
                 }
             }
         }
