@@ -45,3 +45,4 @@ Thumbs.db
 
 # Ignore everything under the Input folder
 Input/**
+Output/**

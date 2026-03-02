@@ -324,6 +324,15 @@ def run_insert(
         commentary_json: Path to JSON file containing commentary entries
         output_path: Path for the annotated output .docx file
     """
+    source_path = Path(docx_path).resolve(strict=False)
+    target_path = Path(output_path).resolve(strict=False)
+
+    # Ensure the source document is never overwritten
+    if source_path == target_path:
+        raise ValueError(
+            "Output document path must be different from input document path."
+        )
+
     doc = Document(docx_path)
 
     # Load the commentary data
@@ -357,9 +366,6 @@ def insert_commentary(
     """
     insert_count = 0
 
-    # Track offset as we insert new paragraphs
-    offset = 0
-
     for entry in commentary_data:
         heading_text = entry.get("heading", "")
         commentary_text = entry.get("commentary", "")
@@ -374,15 +380,11 @@ def insert_commentary(
         if target_index < 0:
             continue
 
-        # Calculate the adjusted index accounting for prior insertions
-        adjusted_index = target_index + offset
-
         # Find the end of the section body to insert after it
-        insert_after = find_section_end(doc, adjusted_index)
+        insert_after = find_section_end(doc, target_index)
 
         # Insert the commentary paragraph
         add_commentary_paragraph(doc, insert_after, commentary_text)
-        offset += 1
         insert_count += 1
 
     return insert_count
