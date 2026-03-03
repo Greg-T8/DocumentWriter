@@ -1,10 +1,10 @@
 # DocumentWriter
 
-AI-powered Word document revision tool that analyzes `.docx` files section by section, interprets embedded screenshots, and rewrites content into polished, production-ready documentation.
+AI-powered Word document revision tool that analyzes `.docx` files section by section and rewrites content into polished, production-ready documentation.
 
 ## Overview
 
-DocumentWriter reads a Word document, extracts its section outline and embedded images via a Python helper, and sends each section (with screenshots) to a chat completions model. The AI applies a senior technical writer persona — following Microsoft Writing Style Guide conventions — and returns revised, client-facing prose. The script then writes the commentary back into the document.
+DocumentWriter reads a Word document, extracts its section outline and body text via a Python helper, and sends each section to a chat completions model. The AI applies a senior technical writer persona — following Microsoft Writing Style Guide conventions — and returns revised, client-facing prose. The script then writes the commentary back into the document.
 
 Two inference providers are supported:
 
@@ -67,7 +67,6 @@ Dependencies:
 | Package | Minimum Version |
 |---------|----------------|
 | `python-docx` | 1.1.0 |
-| `Pillow` | 10.0.0 |
 | `requests` | 2.31.0 |
 
 > The script will attempt to install dependencies automatically on first run if they are not found.
@@ -85,11 +84,14 @@ Dependencies:
 ### Azure OpenAI Provider (production)
 
 ```powershell
+$endpoint   = terraform -chdir=terraform output -raw azure_openai_endpoint
+$deployment = terraform -chdir=terraform output -raw model_deployment_name
+
 .\scripts\Invoke-DocumentCommentary.ps1 `
     -DocumentPath "input\MyDocument.docx" `
     -Provider Azure `
-    -AzureEndpoint "https://<your-endpoint>.openai.azure.com/" `
-    -AzureDeployment "gpt-4o"
+    -AzureEndpoint $endpoint `
+    -AzureDeployment $deployment
 ```
 
 ### Parameters
@@ -112,7 +114,7 @@ The revised document is written to the path specified by `-OutputPath`. If omitt
 
 ## System Prompt
 
-The AI behavior is governed by [prompts/SystemPrompt.md](prompts/SystemPrompt.md). The prompt instructs the model to act as a senior Azure technical writer, accurately interpreting portal screenshots, producing concise prose, and following Microsoft Writing Style Guide conventions.
+The AI behavior is governed by [prompts/SystemPrompt.md](prompts/SystemPrompt.md). The prompt instructs the model to act as a senior Azure technical writer, producing concise prose from the extracted document text and following Microsoft Writing Style Guide conventions.
 
 Customize this file to change the revision style, tone, or domain focus.
 
@@ -154,8 +156,8 @@ $deployment = terraform output -raw model_deployment_name
 
 ## How It Works
 
-1. **Extract** — `docx_processor.py extract` walks the document paragraphs, maps heading levels to section boundaries, and base64-encodes all embedded images into a JSON payload.
-2. **Analyze** — The PowerShell script sends each section (text + images) to the configured chat completions endpoint with the system prompt. Requests are paced by `-RequestDelaySeconds` to stay within rate limits.
+1. **Extract** — `docx_processor.py extract` walks the document paragraphs and maps heading levels to section boundaries in a text-only JSON payload.
+2. **Analyze** — The PowerShell script sends each section text to the configured chat completions endpoint with the system prompt. Requests are paced by `-RequestDelaySeconds` to stay within rate limits.
 3. **Revise** — `docx_processor.py revise` replays the AI commentary back into the document, preserving structure while replacing paragraph content with the revised text.
 4. **Cleanup** — Temporary extraction artifacts are removed after the revised document is saved.
 

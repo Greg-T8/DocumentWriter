@@ -5,7 +5,7 @@ Invoke document commentary from the repository root entry point.
 .DESCRIPTION
 Provides a backward-compatible entry point and forwards parameters to the
 implementation script in the scripts folder. Supports both GitHub Models
-and Azure OpenAI providers.
+and Azure OpenAI providers for text-only document revision.
 
 .CONTEXT
 DocumentWriter project - root launcher for document commentary.

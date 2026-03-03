@@ -1,15 +1,14 @@
 # -------------------------------------------------------------------------
 # Program: docx_processor.py
-# Description: Extract sections/images from a Word document and revise
+# Description: Extract text sections from a Word document and revise
 #              the document based on AI analysis.
 # Context: DocumentWriter project - GitHub Models integration
 # Author: Greg Tate
 # -------------------------------------------------------------------------
 
 """
-Processes Word (.docx) documents: extracts section outlines and embedded
-images for AI analysis, and revises the document based on AI-generated
-suggestions.
+Processes Word (.docx) documents: extracts text section outlines for AI
+analysis, and revises the document based on AI-generated suggestions.
 
 Usage:
     python docx_processor.py extract <docx_path> <output_json>
@@ -19,14 +18,11 @@ Usage:
 #region IMPORTS
 import sys
 import json
-import base64
 import re
 from pathlib import Path
-from io import BytesIO
 
 from docx import Document
 from docx.shared import Pt, RGBColor
-from PIL import Image
 #endregion
 
 
@@ -42,8 +38,8 @@ def main() -> None:
 
     if command == "extract":
         run_extract(sys.argv[2], sys.argv[3])
-    elif command == "revise":
-        run_revise(sys.argv[2], sys.argv[3], sys.argv[4])
+    elif command == "insert":
+        run_insert(sys.argv[2], sys.argv[3], sys.argv[4])
 #endregion
 
 
@@ -53,7 +49,7 @@ def run_extract(
     output_json: str
 ) -> None:
     """
-    Extract sections and images from a Word document and write JSON output.
+    Extract text sections from a Word document and write JSON output.
 
     Args:
         docx_path: Path to the input .docx file
@@ -61,11 +57,8 @@ def run_extract(
     """
     doc = Document(docx_path)
 
-    # Extract all embedded images from the document
-    image_map = extract_image(doc)
-
     # Walk paragraphs and build section list
-    sections = build_section(doc, image_map)
+    sections = build_section(doc)
 
     # Write the extracted data to JSON
     output = {
@@ -78,73 +71,17 @@ def run_extract(
 
     print(f"Extracted {len(sections)} sections to {output_json}")
 
-
-def extract_image(doc: Document) -> dict:
-    """
-    Extract all images from a document's media relationships.
-
-    Returns:
-        dict: Mapping of relationship ID to base64-encoded image data
-    """
-    image_map = {}
-
-    for rel_id, rel in doc.part.rels.items():
-        # Only process image relationships
-        if "image" in rel.reltype:
-            image_data = rel.target_part.blob
-            image_b64 = base64.b64encode(image_data).decode("utf-8")
-
-            # Detect MIME type from the image bytes
-            mime = detect_mime_type(image_data)
-
-            image_map[rel_id] = {
-                "base64": image_b64,
-                "mime_type": mime,
-                "size_bytes": len(image_data)
-            }
-
-    return image_map
-
-
-def detect_mime_type(image_data: bytes) -> str:
-    """
-    Detect the MIME type of an image from its binary data.
-
-    Args:
-        image_data: Raw image bytes
-
-    Returns:
-        str: MIME type string (e.g., 'image/png')
-    """
-    try:
-        img = Image.open(BytesIO(image_data))
-        fmt = (img.format or "png").lower()
-        mime_map = {
-            "png": "image/png",
-            "jpeg": "image/jpeg",
-            "gif": "image/gif",
-            "bmp": "image/bmp",
-            "tiff": "image/tiff",
-            "webp": "image/webp",
-        }
-        return mime_map.get(fmt, f"image/{fmt}")
-    except Exception:
-        return "image/png"
-
-
 def build_section(
-    doc: Document,
-    image_map: dict
+    doc: Document
 ) -> list:
     """
     Walk document paragraphs and group them into sections by heading.
 
     Args:
         doc: The loaded Document object
-        image_map: Mapping of relationship IDs to image data
 
     Returns:
-        list: List of section dictionaries with headings, text, and images
+        list: List of section dictionaries with headings and text
     """
     sections = []
     current_section = None
@@ -164,7 +101,6 @@ def build_section(
                 "heading": paragraph.text.strip(),
                 "heading_level": level,
                 "text_content": [],
-                "images": [],
                 "paragraph_index_start": get_paragraph_index(
                     doc, paragraph
                 )
@@ -176,11 +112,6 @@ def build_section(
                     paragraph.text.strip()
                 )
 
-            # Check for inline images in this paragraph
-            images = extract_paragraph_image(paragraph, image_map)
-            if images:
-                current_section["images"].extend(images)
-
     # Append the last section if present
     if current_section is not None:
         sections.append(current_section)
@@ -188,7 +119,7 @@ def build_section(
     # Handle documents with no headings - treat entire body as one section
     if not sections:
         sections.append(
-            create_default_section(doc, image_map)
+            create_default_section(doc)
         )
 
     return sections
@@ -229,61 +160,14 @@ def get_paragraph_index(
             return i
     return -1
 
-
-def extract_paragraph_image(
-    paragraph,
-    image_map: dict
-) -> list:
-    """
-    Extract image references from inline runs within a paragraph.
-
-    Args:
-        paragraph: A python-docx Paragraph object
-        image_map: Mapping of relationship IDs to image data
-
-    Returns:
-        list: List of image data dictionaries found in the paragraph
-    """
-    images = []
-
-    # Namespace for drawing elements
-    nsmap = {
-        "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
-        "r": (
-            "http://schemas.openxmlformats.org/"
-            "officeDocument/2006/relationships"
-        ),
-        "wp": (
-            "http://schemas.openxmlformats.org/"
-            "drawingml/2006/wordprocessingDrawing"
-        ),
-    }
-
-    # Search for blip elements that reference embedded images
-    for blip in paragraph._element.findall(
-        ".//a:blip", nsmap
-    ):
-        embed_attr = blip.get(
-            "{http://schemas.openxmlformats.org/"
-            "officeDocument/2006/relationships}embed"
-        )
-
-        if embed_attr and embed_attr in image_map:
-            images.append(image_map[embed_attr])
-
-    return images
-
-
 def create_default_section(
-    doc: Document,
-    image_map: dict
+    doc: Document
 ) -> dict:
     """
     Create a single section for documents that have no headings.
 
     Args:
         doc: The Document object
-        image_map: Mapping of relationship IDs to image data
 
     Returns:
         dict: A section dictionary covering the entire document
@@ -294,17 +178,10 @@ def create_default_section(
         if p.text.strip()
     ]
 
-    all_images = []
-    for paragraph in doc.paragraphs:
-        imgs = extract_paragraph_image(paragraph, image_map)
-        if imgs:
-            all_images.extend(imgs)
-
     return {
         "heading": "Document Content",
         "heading_level": 0,
         "text_content": all_text,
-        "images": all_images,
         "paragraph_index_start": 0,
     }
 #endregion

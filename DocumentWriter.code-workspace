@@ -1,8 +1,20 @@
 {
-	"folders": [
+  "folders": [
     {
       "path": "."
     }
   ],
-  "settings": {}
+  "settings": {
+    "terminal.integrated.defaultProfile.windows": "PowerShell Lab",
+    "terminal.integrated.profiles.windows": {
+      "PowerShell Lab": {
+        "args": [
+          "-NoExit",
+          "-Command",
+          "if ($env:TERM_PROGRAM -eq 'vscode') { . \"$(code --locate-shell-integration-path pwsh)\" }; Use-AzProfile Lab"
+        ],
+        "source": "PowerShell"
+      }
+    },
+  }
 }

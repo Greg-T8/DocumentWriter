@@ -4,9 +4,9 @@ Revise a Word document using AI analysis from GitHub Models or Azure OpenAI.
 
 .DESCRIPTION
 Reads a Word (.docx) file, extracts its section outline and embedded
-screenshots via a Python helper, sends each section (with images) to a
-chat completions endpoint for analysis, and revises the document based
-on AI-generated suggestions.
+text via a Python helper, sends each section to a chat completions
+endpoint for analysis, and revises the document based on AI-generated
+suggestions.
 
 Supports two providers:
   - GitHub  : Uses GitHub Models (models.inference.ai.azure.com) with a
@@ -32,9 +32,9 @@ param(
     [string]$DocumentPath,
 
     [ValidateSet('GitHub', 'Azure')]
-    [string]$Provider = 'GitHub',
+    [string]$Provider = 'Azure',
 
-    [string]$Model = 'openai/gpt-4o',
+    [string]$Model = 'gpt-5.1-chat',
 
     [string]$AzureEndpoint,
 
@@ -54,6 +54,7 @@ param(
 $ProjectRoot          = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $GitHubModelsEndpoint = 'https://models.inference.ai.azure.com/chat/completions'
 $ProcessorScript      = Join-Path $ProjectRoot 'src/python/docx_processor.py'
+$TerraformDirectory   = Join-Path $ProjectRoot 'terraform'
 $TempDir              = Join-Path $ProjectRoot '.docwriter_temp'
 $ResolvedToken        = $null
 $ResolvedEndpoint     = $null
@@ -171,11 +172,38 @@ $Helpers = {
     function Initialize-AzureAuthentication {
         # Authenticate using Azure CLI and obtain an Entra ID bearer token
 
+        $resolvedAzureEndpoint = $AzureEndpoint
+        $resolvedAzureDeployment = $AzureDeployment
+
+        # Resolve missing Azure settings from Terraform outputs when available
+        if (
+            [string]::IsNullOrWhiteSpace($resolvedAzureEndpoint) -or
+            [string]::IsNullOrWhiteSpace($resolvedAzureDeployment)
+        ) {
+            $terraformSettings = Get-AzureSettingsFromTerraform
+
+            if (
+                [string]::IsNullOrWhiteSpace($resolvedAzureEndpoint) -and
+                -not [string]::IsNullOrWhiteSpace($terraformSettings.AzureEndpoint)
+            ) {
+                $resolvedAzureEndpoint = $terraformSettings.AzureEndpoint
+                Write-Verbose "Resolved Azure endpoint from Terraform output."
+            }
+
+            if (
+                [string]::IsNullOrWhiteSpace($resolvedAzureDeployment) -and
+                -not [string]::IsNullOrWhiteSpace($terraformSettings.AzureDeployment)
+            ) {
+                $resolvedAzureDeployment = $terraformSettings.AzureDeployment
+                Write-Verbose "Resolved Azure deployment from Terraform output."
+            }
+        }
+
         # Validate required Azure parameters
-        if ([string]::IsNullOrWhiteSpace($AzureEndpoint)) {
+        if ([string]::IsNullOrWhiteSpace($resolvedAzureEndpoint)) {
             throw "The -AzureEndpoint parameter is required when using the Azure provider."
         }
-        if ([string]::IsNullOrWhiteSpace($AzureDeployment)) {
+        if ([string]::IsNullOrWhiteSpace($resolvedAzureDeployment)) {
             throw "The -AzureDeployment parameter is required when using the Azure provider."
         }
 
@@ -208,11 +236,56 @@ $Helpers = {
         $script:ResolvedToken = $tokenJson.Trim()
 
         # Build the Azure OpenAI chat completions endpoint URL
-        $baseUrl = $AzureEndpoint.TrimEnd('/')
-        $script:ResolvedEndpoint = "${baseUrl}/openai/deployments/${AzureDeployment}/chat/completions?api-version=2024-12-01-preview"
-        $script:ResolvedModel    = $AzureDeployment
+        $baseUrl = $resolvedAzureEndpoint.TrimEnd('/')
+        $script:ResolvedEndpoint = "${baseUrl}/openai/deployments/${resolvedAzureDeployment}/chat/completions?api-version=2024-12-01-preview"
+        $script:ResolvedModel    = $resolvedAzureDeployment
 
         Write-Verbose "Azure CLI authentication completed. Endpoint: $script:ResolvedEndpoint"
+    }
+
+    function Get-AzureSettingsFromTerraform {
+        # Read Azure endpoint and deployment values from Terraform outputs
+
+        $azureSettings = [pscustomobject]@{
+            AzureEndpoint   = $null
+            AzureDeployment = $null
+        }
+
+        # Skip Terraform resolution when the terraform directory is unavailable
+        if (-not (Test-Path -Path $TerraformDirectory -PathType Container)) {
+            return $azureSettings
+        }
+
+        # Skip Terraform resolution when terraform CLI is not installed
+        try {
+            $null = & terraform version 2>$null
+        }
+        catch {
+            return $azureSettings
+        }
+
+        try {
+            Push-Location -Path $TerraformDirectory
+
+            # Read endpoint and deployment from known output names
+            $endpointOutput = & terraform output -raw azure_openai_endpoint 2>$null
+            if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($endpointOutput)) {
+                $azureSettings.AzureEndpoint = $endpointOutput.Trim()
+            }
+
+            $deploymentOutput = & terraform output -raw model_deployment_name 2>$null
+            if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($deploymentOutput)) {
+                $azureSettings.AzureDeployment = $deploymentOutput.Trim()
+            }
+        }
+        catch {
+            return $azureSettings
+        }
+        finally {
+            Pop-Location
+        }
+
+        return $azureSettings
     }
 
     function Initialize-SystemPrompt {
@@ -240,11 +313,24 @@ $Helpers = {
         $script:ResolvedSystemPrompt = $promptText.Trim()
         Write-Verbose "Loaded system prompt file: $promptPath"
     }
+
+    function Show-VerboseIfNotEmpty {
+        # Write a verbose message only when text content is present
+        param(
+            [AllowNull()]
+            [AllowEmptyString()]
+            [string]$Message
+        )
+
+        if (-not [string]::IsNullOrWhiteSpace($Message)) {
+            Write-Verbose $Message
+        }
+    }
     #endregion
 
     #region DOCUMENT EXTRACTION
     function Export-DocumentSection {
-        # Call Python to extract section outlines and images from the docx
+        # Call Python to extract section outlines and text from the docx
 
         $jsonOut = Join-Path $TempDir 'extracted_sections.json'
         $resolvedDoc = (Resolve-Path $DocumentPath).Path
@@ -256,8 +342,7 @@ $Helpers = {
         if ($LASTEXITCODE -ne 0) {
             throw "Document extraction failed: $result"
         }
-
-        Write-Verbose $result
+        Show-VerboseIfNotEmpty -Message ([string]$result)
 
         # Load and return the extracted JSON data
         $extracted = Get-Content $jsonOut -Raw | ConvertFrom-Json
@@ -322,7 +407,7 @@ $Helpers = {
             throw "System prompt is unavailable. Ensure 'Initialize-SystemPrompt' runs before API calls."
         }
 
-        # Build the user content parts (text + optional images)
+        # Build the user content parts as text-only input
         $contentParts = @()
 
         # Compose the section text prompt
@@ -338,26 +423,6 @@ $Helpers = {
         $contentParts += @{
             type = 'text'
             text = $sectionText
-        }
-
-        # Add any images from the section as base64-encoded parts
-        if ($Section.images -and $Section.images.Count -gt 0) {
-            $imgIndex = 0
-            foreach ($img in $Section.images) {
-                $imgIndex++
-
-                $contentParts += @{
-                    type = 'text'
-                    text = "[Screenshot $imgIndex in this section]"
-                }
-
-                $contentParts += @{
-                    type      = 'image_url'
-                    image_url = @{
-                        url = "data:$($img.mime_type);base64,$($img.base64)"
-                    }
-                }
-            }
         }
 
         # Assemble the full messages array
@@ -503,12 +568,25 @@ $Helpers = {
             'Content-Type'  = 'application/json'
         }
 
-        $body = @{
+        $requestBody = @{
             model       = $script:ResolvedModel
             messages    = $Messages
-            temperature = 0.4
-            max_tokens  = 500
-        } | ConvertTo-Json -Depth 20
+        }
+
+        # Set a custom temperature only for providers that support it
+        if ($Provider -ne 'Azure') {
+            $requestBody.temperature = 0.4
+        }
+
+        # Use provider-specific completion token parameter name
+        if ($Provider -eq 'Azure') {
+            $requestBody.max_completion_tokens = 500
+        }
+        else {
+            $requestBody.max_tokens = 500
+        }
+
+        $body = $requestBody | ConvertTo-Json -Depth 20
 
         # Retry logic for transient API failures
         $maxRetries = 6
@@ -660,8 +738,7 @@ $Helpers = {
         if ($LASTEXITCODE -ne 0) {
             throw "Commentary insertion failed: $result"
         }
-
-        Write-Verbose $result
+        Show-VerboseIfNotEmpty -Message ([string]$result)
         Write-Host "Annotated document saved to: $outFile" -ForegroundColor Green
     }
     #endregion
