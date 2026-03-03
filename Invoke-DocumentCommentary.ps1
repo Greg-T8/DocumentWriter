@@ -7,6 +7,10 @@ Provides a backward-compatible entry point and forwards parameters to the
 implementation script in the scripts folder. Supports both GitHub Models
 and Azure OpenAI providers for text-only document revision.
 
+Use the -Subscription parameter to target different Azure subscriptions:
+  - msdn : MSDN subscription (spending limit, restricted model catalog)
+  - payg : Pay-As-You-Go subscription (full model catalog access)
+
 .CONTEXT
 DocumentWriter project - root launcher for document commentary.
 
@@ -25,6 +29,9 @@ param(
 
     [ValidateSet('GitHub', 'Azure')]
     [string]$Provider = 'GitHub',
+
+    [ValidateSet('msdn', 'payg')]
+    [string]$Subscription = 'msdn',
 
     [string]$Model = 'openai/gpt-4o',
 

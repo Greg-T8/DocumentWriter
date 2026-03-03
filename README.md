@@ -4,7 +4,7 @@ AI-powered Word document revision tool that analyzes `.docx` files section by se
 
 ## Overview
 
-DocumentWriter reads a Word document, extracts its section outline and body text via a Python helper, and sends each section to a chat completions model. The AI applies a senior technical writer persona — following Microsoft Writing Style Guide conventions — and returns revised, client-facing prose. The script then writes the commentary back into the document.
+DocumentWriter reads a Word document, extracts its section outline and body text via a Python helper, and sends each section to a chat completions model. The AI applies a senior technical writer persona — following Microsoft Writing Style Guide conventions — and returns revised, client-facing prose. The script then rewrites each section body in the document with the revised prose.
 
 Two inference providers are supported:
 
@@ -158,7 +158,7 @@ $deployment = terraform output -raw model_deployment_name
 
 1. **Extract** — `docx_processor.py extract` walks the document paragraphs and maps heading levels to section boundaries in a text-only JSON payload.
 2. **Analyze** — The PowerShell script sends each section text to the configured chat completions endpoint with the system prompt. Requests are paced by `-RequestDelaySeconds` to stay within rate limits.
-3. **Revise** — `docx_processor.py revise` replays the AI commentary back into the document, preserving structure while replacing paragraph content with the revised text.
+3. **Revise** — `docx_processor.py revise` replaces each section body with the AI-rewritten prose while preserving section headings and document structure.
 4. **Cleanup** — Temporary extraction artifacts are removed after the revised document is saved.
 
 ## Authentication

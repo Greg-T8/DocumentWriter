@@ -21,6 +21,7 @@ locals {
     Owner            = var.owner
     DateCreated      = var.date_created
     DeploymentMethod = "Terraform"
+    Workspace        = terraform.workspace
   }
 }
 

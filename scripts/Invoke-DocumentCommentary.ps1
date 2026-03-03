@@ -15,6 +15,13 @@ Supports two providers:
               Entra ID bearer token from the Azure CLI. Production-grade
               throughput and token limits.
 
+Supports multiple Azure subscriptions via the -Subscription parameter:
+  - msdn : MSDN subscription (spending limit, restricted model catalog)
+  - payg : Pay-As-You-Go subscription (full model catalog access)
+
+Each subscription maps to a Terraform workspace for isolated state
+management while sharing the same infrastructure code.
+
 .CONTEXT
 DocumentWriter project - AI-powered document revision.
 
@@ -34,6 +41,9 @@ param(
     [ValidateSet('GitHub', 'Azure')]
     [string]$Provider = 'Azure',
 
+    [ValidateSet('msdn', 'payg')]
+    [string]$Subscription = 'msdn',
+
     [string]$Model = 'gpt-5.1-chat',
 
     [string]$AzureEndpoint,
@@ -45,7 +55,7 @@ param(
     [string]$SystemPromptFile = 'prompts/SystemPrompt.md',
 
     [ValidateRange(0, 120)]
-    [int]$RequestDelaySeconds = 30,
+    [int]$RequestDelaySeconds = 5,
 
     [string]$PythonExe = 'python'
 )
@@ -61,6 +71,20 @@ $ResolvedEndpoint     = $null
 $ResolvedModel        = $null
 $ResolvedSystemPrompt = $null
 
+# Subscription-to-workspace mapping
+$SubscriptionMap = @{
+    'msdn' = @{
+        SubscriptionId     = 'e091f6e7-031a-4924-97bb-8c983ca5d21a'
+        TerraformWorkspace = 'default'
+        TfVarsFile         = 'msdn.tfvars'
+    }
+    'payg' = @{
+        SubscriptionId     = 'e6ad7655-b3ba-4324-8361-fcfdc59973a5'
+        TerraformWorkspace = 'payg'
+        TfVarsFile         = 'payg.tfvars'
+    }
+}
+
 $Main = {
     . $Helpers
 
@@ -68,8 +92,8 @@ $Main = {
     Initialize-Authentication
     Initialize-SystemPrompt
     $extracted = Export-DocumentSection
-    $commentary = Get-SectionCommentary -Sections $extracted.sections
-    Import-Commentary -Commentary $commentary
+    $revision = Get-SectionRevision -Sections $extracted.sections
+    Import-Revision -Revision $revision
     Remove-TempArtifact
 }
 
@@ -172,8 +196,41 @@ $Helpers = {
     function Initialize-AzureAuthentication {
         # Authenticate using Azure CLI and obtain an Entra ID bearer token
 
+        # Look up the selected subscription details from the mapping table
+        $subInfo = $SubscriptionMap[$Subscription]
+        $targetSubscriptionId = $subInfo.SubscriptionId
+
         $resolvedAzureEndpoint = $AzureEndpoint
         $resolvedAzureDeployment = $AzureDeployment
+
+        # Verify Azure CLI is installed
+        try {
+            $null = & az --version 2>&1
+        }
+        catch {
+            throw "Azure CLI ('az') was not found. Install it from: https://learn.microsoft.com/cli/azure/install-azure-cli"
+        }
+
+        # Verify Azure CLI login status
+        $accountJson = & az account show 2>$null
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($accountJson)) {
+            Write-Host "Azure CLI is not authenticated. Starting interactive login..." -ForegroundColor Yellow
+            & az login
+
+            if ($LASTEXITCODE -ne 0) {
+                throw "Azure CLI authentication failed. Run 'az login' and try again."
+            }
+        }
+
+        # Set the Azure CLI context to the target subscription
+        Write-Verbose "Setting Azure subscription to: $Subscription ($targetSubscriptionId)"
+        & az account set --subscription $targetSubscriptionId 2>$null
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to set Azure subscription to '$Subscription' ($targetSubscriptionId). Verify access with 'az account list'."
+        }
+
+        Write-Host "Using Azure subscription: $Subscription ($targetSubscriptionId)" -ForegroundColor Cyan
 
         # Resolve missing Azure settings from Terraform outputs when available
         if (
@@ -207,25 +264,6 @@ $Helpers = {
             throw "The -AzureDeployment parameter is required when using the Azure provider."
         }
 
-        # Verify Azure CLI is installed
-        try {
-            $null = & az --version 2>&1
-        }
-        catch {
-            throw "Azure CLI ('az') was not found. Install it from: https://learn.microsoft.com/cli/azure/install-azure-cli"
-        }
-
-        # Verify Azure CLI login status
-        $accountJson = & az account show 2>$null
-        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($accountJson)) {
-            Write-Host "Azure CLI is not authenticated. Starting interactive login..." -ForegroundColor Yellow
-            & az login
-
-            if ($LASTEXITCODE -ne 0) {
-                throw "Azure CLI authentication failed. Run 'az login' and try again."
-            }
-        }
-
         # Obtain a bearer token scoped to Cognitive Services
         $tokenJson = & az account get-access-token --resource https://cognitiveservices.azure.com --query accessToken -o tsv 2>$null
 
@@ -244,7 +282,7 @@ $Helpers = {
     }
 
     function Get-AzureSettingsFromTerraform {
-        # Read Azure endpoint and deployment values from Terraform outputs
+        # Read Azure endpoint and deployment values from the Terraform workspace
 
         $azureSettings = [pscustomobject]@{
             AzureEndpoint   = $null
@@ -264,8 +302,24 @@ $Helpers = {
             return $azureSettings
         }
 
+        # Resolve the Terraform workspace for the selected subscription
+        $subInfo = $SubscriptionMap[$Subscription]
+        $targetWorkspace = $subInfo.TerraformWorkspace
+
         try {
             Push-Location -Path $TerraformDirectory
+
+            # Select the workspace that matches the target subscription
+            $currentWorkspace = (& terraform workspace show 2>$null)
+            if ($currentWorkspace -and $currentWorkspace.Trim() -ne $targetWorkspace) {
+                Write-Verbose "Switching Terraform workspace to: $targetWorkspace"
+                $null = & terraform workspace select $targetWorkspace 2>$null
+
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Warning "Terraform workspace '$targetWorkspace' not found. Run 'terraform workspace new $targetWorkspace' to create it."
+                    return $azureSettings
+                }
+            }
 
             # Read endpoint and deployment from known output names
             $endpointOutput = & terraform output -raw azure_openai_endpoint 2>$null
@@ -354,18 +408,18 @@ $Helpers = {
     #endregion
 
     #region GITHUB MODELS API
-    function Get-SectionCommentary {
-        # Send each section to GitHub Models and collect AI commentary
+    function Get-SectionRevision {
+        # Send each section to the model and collect rewritten prose
         param(
             [Parameter(Mandatory)]
             [array]$Sections
         )
 
-        $commentary = @()
+        $revision = @()
         $totalSections = $Sections.Count
 
         foreach ($section in $Sections) {
-            $index = $commentary.Count + 1
+            $index = $revision.Count + 1
             $heading = $section.heading
 
             # Pace requests to reduce per-minute model rate-limit failures
@@ -381,18 +435,18 @@ $Helpers = {
             # Call the chat completions API
             $response = Invoke-ModelApi -Messages $messages
 
-            # Extract the commentary text from the response
-            $commentaryText = $response.choices[0].message.content
+            # Extract the revised text from the response
+            $revisedText = $response.choices[0].message.content
 
-            $commentary += @{
-                heading    = $heading
-                commentary = $commentaryText
+            $revision += @{
+                heading      = $heading
+                revised_text = $revisedText
             }
 
-            Write-Verbose "Commentary generated for: $heading"
+            Write-Verbose "Revision generated for: $heading"
         }
 
-        return $commentary
+        return $revision
     }
 
     function Build-ApiMessage {
@@ -650,12 +704,12 @@ $Helpers = {
     }
     #endregion
 
-    #region COMMENTARY INSERTION
-    function Import-Commentary {
-        # Write commentary JSON and call Python to insert into document
+    #region DOCUMENT REVISION
+    function Import-Revision {
+        # Write section revisions to JSON and call Python to rewrite the document
         param(
             [Parameter(Mandatory)]
-            [array]$Commentary
+            [array]$Revision
         )
 
         # Determine output file path
@@ -695,7 +749,7 @@ $Helpers = {
         else {
             $baseName = [System.IO.Path]::GetFileNameWithoutExtension($resolvedDoc)
             $directory = $defaultOutputDirectory
-            $outFile = Join-Path $directory "${baseName}_commented_${timestamp}.docx"
+            $outFile = Join-Path $directory "${baseName}_revised_${timestamp}.docx"
         }
 
         # Ensure the final output directory exists
@@ -717,7 +771,7 @@ $Helpers = {
             $baseName = [System.IO.Path]::GetFileNameWithoutExtension($resolvedDoc)
             $directory = $defaultOutputDirectory
             $fallbackTimestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-            $outputFullPath = Join-Path $directory "${baseName}_commented_${fallbackTimestamp}.docx"
+            $outputFullPath = Join-Path $directory "${baseName}_revised_${fallbackTimestamp}.docx"
 
             Write-Warning (
                 "Requested output matched the source document. " +
@@ -727,19 +781,19 @@ $Helpers = {
 
         $outFile = $outputFullPath
 
-        # Write commentary to a temp JSON file
-        $commentaryJson = Join-Path $TempDir 'commentary.json'
-        $Commentary | ConvertTo-Json -Depth 10 | Set-Content -Path $commentaryJson -Encoding UTF8
+        # Write section revisions to a temp JSON file
+        $revisionJson = Join-Path $TempDir 'revision.json'
+        $Revision | ConvertTo-Json -Depth 10 | Set-Content -Path $revisionJson -Encoding UTF8
 
-        Write-Host "Inserting commentary into document..." -ForegroundColor Cyan
+        Write-Host "Rewriting document prose..." -ForegroundColor Cyan
 
-        # Run the Python insert command
-        $result = & $PythonExe $ProcessorScript insert $resolvedDoc $commentaryJson $outFile 2>&1
+        # Run the Python revise command
+        $result = & $PythonExe $ProcessorScript revise $resolvedDoc $revisionJson $outFile 2>&1
         if ($LASTEXITCODE -ne 0) {
-            throw "Commentary insertion failed: $result"
+            throw "Document revision failed: $result"
         }
         Show-VerboseIfNotEmpty -Message ([string]$result)
-        Write-Host "Annotated document saved to: $outFile" -ForegroundColor Green
+        Write-Host "Revised document saved to: $outFile" -ForegroundColor Green
     }
     #endregion
 

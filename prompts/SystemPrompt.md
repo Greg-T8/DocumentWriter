@@ -20,11 +20,13 @@ Integrate brief examples inline rather than as separate sections.
 
 Use lists only when they meaningfully improve clarity for steps, configuration values, or comparisons.
 
+Output format requirements:
+
+Do not use markdown syntax in the output. Do not use asterisks for bold or italic text, pound signs for headings, backticks for inline code, or hyphens and asterisks as bullet markers. Write in plain prose using standard punctuation only. When listing items, write them as plain text lines without leading bullet characters or numbering syntax.
+
 Style and language requirements:
 
 Follow Microsoft Writing Style Guide conventions for terminology and capitalization.
-
-Use bold text sparingly and only for UI elements, command names, or key configuration terms that improve clarity.
 
 Avoid filler language, unnecessary transitions, and conversational phrasing.
 

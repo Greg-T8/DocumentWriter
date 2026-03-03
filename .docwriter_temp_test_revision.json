@@ -1,0 +1,10 @@
+[
+  {
+    "heading": "Overview",
+    "revised_text": "UPDATED: Overview\n\nThis document covers the implementation of Azure Monitor for services in the sub-blp-prod Azure subscription. Azure Monitor has been configured to provide alerting on the following services: SQL endpoint connections to F12 and Epicor over VPN Security alerts with Defender for Cloud The following sections cover the configuration implementation and offer guidance on recommended practices."
+  },
+  {
+    "heading": "Network Topology",
+    "revised_text": "UPDATED: Network Topology\n\nThe following screenshot depicts the network topology for the <insert name here> system.  The topology includes two SQL managed instances, one for prod and one for dev.  The SQL managed instances primarily operate by communications over a public network. There is a plan is to eventually reduce public exposure by removing public access. Separately, a VPN gateway allows communication from two SQL endpoints, one hosted at the MSP F12 called BLPSQLPROD01 and another hosted ERP provider, Epicor, which has the endpoint LTSERV00."
+  }
+]

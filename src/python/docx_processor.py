@@ -12,7 +12,7 @@ analysis, and revises the document based on AI-generated suggestions.
 
 Usage:
     python docx_processor.py extract <docx_path> <output_json>
-    python docx_processor.py revise  <docx_path> <analysis_json> <output_docx>
+    python docx_processor.py revise  <docx_path> <revision_json> <output_docx>
 """
 
 #region IMPORTS
@@ -22,7 +22,6 @@ import re
 from pathlib import Path
 
 from docx import Document
-from docx.shared import Pt, RGBColor
 #endregion
 
 
@@ -31,15 +30,15 @@ def main() -> None:
     """
     Main entry point - dispatches to extract or revise based on CLI args.
     """
+    # Determine which command to run
     validate_argument(sys.argv)
 
-    # Determine which command to run
     command = sys.argv[1].lower()
 
     if command == "extract":
         run_extract(sys.argv[2], sys.argv[3])
-    elif command == "insert":
-        run_insert(sys.argv[2], sys.argv[3], sys.argv[4])
+    elif command in ("insert", "revise"):
+        run_revise(sys.argv[2], sys.argv[3], sys.argv[4])
 #endregion
 
 
@@ -188,18 +187,18 @@ def create_default_section(
 
 
 #region INSERT FUNCTIONS
-def run_insert(
+def run_revise(
     docx_path: str,
-    commentary_json: str,
+    revision_json: str,
     output_path: str
 ) -> None:
     """
-    Insert AI-generated commentary into a copy of the Word document.
+    Rewrite section body prose in a copy of the Word document.
 
     Args:
         docx_path: Path to the original .docx file
-        commentary_json: Path to JSON file containing commentary entries
-        output_path: Path for the annotated output .docx file
+        revision_json: Path to JSON file containing rewritten section text
+        output_path: Path for the revised output .docx file
     """
     source_path = Path(docx_path).resolve(strict=False)
     target_path = Path(output_path).resolve(strict=False)
@@ -212,43 +211,43 @@ def run_insert(
 
     doc = Document(docx_path)
 
-    # Load the commentary data
-    with open(commentary_json, "r", encoding="utf-8") as f:
-        commentary_data = json.load(f)
+    # Load the section revision data
+    with open(revision_json, "r", encoding="utf-8") as f:
+        revision_data = json.load(f)
 
-    # Insert commentary after each matching section heading
-    insert_count = insert_commentary(doc, commentary_data)
+    # Rewrite matching section body paragraphs with revised prose
+    revised_count = rewrite_section_body(doc, revision_data)
 
-    # Save the annotated document
+    # Save the revised document
     doc.save(output_path)
     print(
-        f"Inserted {insert_count} commentary blocks "
+        f"Rewrote {revised_count} section bodies "
         f"into {output_path}"
     )
 
 
-def insert_commentary(
+def rewrite_section_body(
     doc: Document,
-    commentary_data: list
+    revision_data: list
 ) -> int:
     """
-    Insert formatted commentary paragraphs after section headings.
+    Replace section body paragraphs with revised prose.
 
     Args:
         doc: The Document object to modify
-        commentary_data: List of dicts with 'heading' and 'commentary' keys
+        revision_data: List of dicts with 'heading' and 'revised_text' keys
 
     Returns:
-        int: Number of commentary blocks inserted
+        int: Number of section bodies rewritten
     """
-    insert_count = 0
+    revised_count = 0
 
-    for entry in commentary_data:
+    for entry in revision_data:
         heading_text = entry.get("heading", "")
-        commentary_text = entry.get("commentary", "")
+        revised_text = get_revised_text(entry)
 
-        # Skip entries with no commentary
-        if not commentary_text.strip():
+        # Skip entries with no rewritten text
+        if not revised_text.strip():
             continue
 
         # Find the heading paragraph in the document
@@ -257,14 +256,35 @@ def insert_commentary(
         if target_index < 0:
             continue
 
-        # Find the end of the section body to insert after it
-        insert_after = find_section_end(doc, target_index)
+        # Rewrite paragraph body for this section
+        rewrite_section_by_index(doc, target_index, revised_text)
+        revised_count += 1
 
-        # Insert the commentary paragraph
-        add_commentary_paragraph(doc, insert_after, commentary_text)
-        insert_count += 1
+    return revised_count
 
-    return insert_count
+
+def get_revised_text(entry: dict) -> str:
+    """
+    Resolve revised text from a revision entry.
+
+    Accepts either a preferred 'revised_text' key or a legacy
+    'commentary' key for compatibility.
+
+    Args:
+        entry: The revision entry object
+
+    Returns:
+        str: Rewritten prose text
+    """
+    revised_text = entry.get("revised_text", "")
+    if isinstance(revised_text, str) and revised_text.strip():
+        return revised_text
+
+    legacy_text = entry.get("commentary", "")
+    if isinstance(legacy_text, str):
+        return legacy_text
+
+    return ""
 
 
 def find_heading_paragraph(
@@ -293,74 +313,192 @@ def find_heading_paragraph(
     return -1
 
 
-def find_section_end(
+def get_section_body_indexes(
     doc: Document,
     heading_index: int
-) -> int:
+) -> list:
     """
-    Find the last paragraph index belonging to a section.
-
-    Scans forward from the heading until the next heading or document end.
+    Collect paragraph indexes for the body belonging to a section.
 
     Args:
         doc: The Document object
         heading_index: Index of the section heading paragraph
 
     Returns:
-        int: Index of the last paragraph in the section
+        list: Paragraph indexes between this heading and the next heading
     """
-    last_index = heading_index
+    body_indexes = []
 
-    for i in range(heading_index + 1, len(doc.paragraphs)):
-        style_name = doc.paragraphs[i].style.name if doc.paragraphs[i].style else ""
+    for index in range(heading_index + 1, len(doc.paragraphs)):
+        style_name = doc.paragraphs[index].style.name if doc.paragraphs[index].style else ""
 
         # Stop at the next heading
         if style_name.startswith("Heading"):
             break
 
-        last_index = i
+        body_indexes.append(index)
 
-    return last_index
+    return body_indexes
 
 
-def add_commentary_paragraph(
+def rewrite_section_by_index(
     doc: Document,
-    after_index: int,
-    commentary_text: str
+    heading_index: int,
+    revised_text: str
 ) -> None:
     """
-    Insert a visually distinct commentary paragraph after the given index.
+    Replace text body paragraphs in a section with rewritten content.
 
     Args:
         doc: The Document object
-        after_index: Paragraph index to insert after
-        commentary_text: The commentary text to insert
+        heading_index: Index of the section heading paragraph
+        revised_text: Rewritten prose to insert for the section
     """
-    # Build the new paragraph element
-    target_element = doc.paragraphs[after_index]._element
-    new_para = doc.add_paragraph()
+    body_indexes = get_section_body_indexes(doc, heading_index)
+    paragraph_texts = split_revised_paragraphs(revised_text)
+    body_paragraphs = [doc.paragraphs[index] for index in body_indexes]
 
-    # Style the commentary paragraph
-    new_para.style = doc.styles["Normal"]
-    new_para.paragraph_format.space_before = Pt(6)
-    new_para.paragraph_format.space_after = Pt(6)
+    # Keep media paragraphs (screenshots/images) and only replace text prose
+    media_paragraphs = [
+        paragraph
+        for paragraph in body_paragraphs
+        if paragraph_contains_media(paragraph)
+    ]
+    text_paragraphs = [
+        paragraph
+        for paragraph in body_paragraphs
+        if paragraph not in media_paragraphs
+    ]
 
-    # Add a bold label prefix
-    label_run = new_para.add_run("[AI Commentary] ")
-    label_run.bold = True
-    label_run.font.color.rgb = RGBColor(0x00, 0x51, 0x8A)
-    label_run.font.size = Pt(10)
+    # Nothing to rewrite when there is no text body and no revised prose
+    if not text_paragraphs and not paragraph_texts:
+        return
 
-    # Add the commentary text
-    text_run = new_para.add_run(commentary_text)
-    text_run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
-    text_run.font.size = Pt(10)
-    text_run.italic = True
+    # Choose insertion anchor so media keeps its original relative position
+    insertion_before_element = None
+    insertion_after_element = None
 
-    # Move the new paragraph element to the correct position
-    new_element = new_para._element
-    new_element.getparent().remove(new_element)
-    target_element.addnext(new_element)
+    if text_paragraphs:
+        insertion_before_element = text_paragraphs[0]._element
+    else:
+        insertion_after_element = doc.paragraphs[heading_index]._element
+
+    # Insert rewritten paragraphs before removing old text paragraphs
+    for paragraph_text in paragraph_texts:
+        new_paragraph = doc.add_paragraph(paragraph_text)
+        new_paragraph.style = doc.styles["Normal"]
+
+        new_element = new_paragraph._element
+        new_element.getparent().remove(new_element)
+
+        if insertion_before_element is not None:
+            insertion_before_element.addprevious(new_element)
+        else:
+            insertion_after_element.addnext(new_element)
+            insertion_after_element = new_element
+
+    # Remove only old text paragraphs from bottom to top
+    for paragraph in reversed(text_paragraphs):
+        remove_paragraph(paragraph)
+
+
+def paragraph_contains_media(paragraph) -> bool:
+    """
+    Check whether a paragraph contains embedded media content.
+
+    Args:
+        paragraph: Paragraph object from python-docx
+
+    Returns:
+        bool: True when paragraph contains drawings, pictures, or objects
+    """
+    element = paragraph._element
+
+    # Detect inline/floating images and legacy picture/object elements
+    media_nodes = element.xpath(
+        ".//*[local-name()='drawing' or local-name()='pict' or local-name()='object']"
+    )
+
+    return len(media_nodes) > 0
+
+
+def remove_paragraph(paragraph) -> None:
+    """
+    Remove a paragraph from the document body.
+
+    Args:
+        paragraph: The paragraph object to remove
+    """
+    element = paragraph._element
+    parent = element.getparent()
+
+    if parent is not None:
+        parent.remove(element)
+
+
+def strip_markdown(text: str) -> str:
+    """
+    Remove common markdown formatting characters from model output.
+
+    Handles bold/italic markers, inline code, links, heading prefixes,
+    and bullet list markers so that plain text is inserted into Word.
+
+    Args:
+        text: Raw model output that may contain markdown syntax
+
+    Returns:
+        str: Plain text with markdown syntax removed
+    """
+    # Remove bold markers (**text** and __text__)
+    text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+    text = re.sub(r'__(.*?)__', r'\1', text)
+
+    # Remove italic markers (*text* and _text_)
+    text = re.sub(r'\*(.*?)\*', r'\1', text)
+    text = re.sub(r'_(.*?)_', r'\1', text)
+
+    # Remove inline code backticks
+    text = re.sub(r'`(.*?)`', r'\1', text)
+
+    # Remove markdown links, keeping the display text
+    text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
+
+    # Remove heading marker prefixes (e.g. ## Heading)
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+
+    # Remove bullet list markers (-, *, +)
+    text = re.sub(r'^[\s]*[-*+]\s+', '', text, flags=re.MULTILINE)
+
+    # Remove numbered list markers (e.g. 1. , 2. )
+    text = re.sub(r'^\s*\d+\.\s+', '', text, flags=re.MULTILINE)
+
+    return text
+
+
+def split_revised_paragraphs(
+    revised_text: str
+) -> list:
+    """
+    Split model output into document paragraph blocks.
+
+    Strips markdown formatting before splitting so that plain text
+    is inserted into the Word document.
+
+    Args:
+        revised_text: Full rewritten text from the model
+
+    Returns:
+        list: Non-empty paragraph strings
+    """
+    cleaned = revised_text.replace("\r\n", "\n").strip()
+    if not cleaned:
+        return []
+
+    # Remove markdown syntax before inserting into Word
+    cleaned = strip_markdown(cleaned)
+
+    blocks = re.split(r"\n\s*\n", cleaned)
+    return [block.strip() for block in blocks if block.strip()]
 #endregion
 
 
@@ -384,17 +522,17 @@ def validate_argument(argv: list) -> None:
         show_usage()
         sys.exit(1)
 
-    # Validate insert command requires 3 additional args
-    if command == "insert" and len(argv) != 5:
+    # Validate insert/revise command requires 3 additional args
+    if command in ("insert", "revise") and len(argv) != 5:
         print(
-            "Error: 'insert' requires "
-            "<docx_path> <commentary_json> <output_docx>"
+            "Error: 'insert'/'revise' requires "
+            "<docx_path> <revision_json> <output_docx>"
         )
         show_usage()
         sys.exit(1)
 
     # Validate command name
-    if command not in ("extract", "insert"):
+    if command not in ("extract", "insert", "revise"):
         print(f"Error: Unknown command '{command}'")
         show_usage()
         sys.exit(1)
@@ -408,8 +546,8 @@ def show_usage() -> None:
         "Usage:\n"
         "  python docx_processor.py extract "
         "<docx_path> <output_json>\n"
-        "  python docx_processor.py insert  "
-        "<docx_path> <commentary_json> <output_docx>",
+        "  python docx_processor.py revise  "
+        "<docx_path> <revision_json> <output_docx>",
         file=sys.stderr,
     )
 #endregion
