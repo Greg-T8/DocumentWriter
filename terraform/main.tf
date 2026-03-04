@@ -83,7 +83,7 @@ resource "azurerm_cognitive_account" "ai_foundry" {
 # Model Deployment (GPT-4o for document commentary with vision support)
 # =========================================================================
 
-# Deploy GPT-4o with GlobalStandard SKU for production-grade throughput
+# Deploy with GlobalStandard SKU for production-grade throughput
 resource "azurerm_cognitive_deployment" "model" {
   count = var.deploy_model ? 1 : 0
 
