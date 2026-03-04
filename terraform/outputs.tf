@@ -31,7 +31,7 @@ output "azure_openai_endpoint" {
 
 output "model_deployment_name" {
   description = "Deployed model name (use with -AzureDeployment parameter)"
-  value       = azurerm_cognitive_deployment.model.name
+  value       = try(azurerm_cognitive_deployment.model[0].name, null)
 }
 
 # =========================================================================
@@ -40,5 +40,5 @@ output "model_deployment_name" {
 
 output "script_usage" {
   description = "Example command to run Invoke-DocumentRevision with Azure provider"
-  value       = "Invoke-DocumentRevision.ps1 -DocumentPath <file.docx> -Provider Azure -AzureEndpoint '${azurerm_cognitive_account.ai_foundry.endpoint}' -AzureDeployment '${azurerm_cognitive_deployment.model.name}'"
+  value       = var.deploy_model ? "Invoke-DocumentRevision.ps1 -DocumentPath <file.docx> -Provider Azure -AzureEndpoint '${azurerm_cognitive_account.ai_foundry.endpoint}' -AzureDeployment '${azurerm_cognitive_deployment.model[0].name}'" : "Model deployment disabled. Re-run with deploy_model=true and a quota-enabled model, then use: Invoke-DocumentRevision.ps1 -DocumentPath <file.docx> -Provider Azure -AzureEndpoint '${azurerm_cognitive_account.ai_foundry.endpoint}' -AzureDeployment '<deployment-name>'"
 }

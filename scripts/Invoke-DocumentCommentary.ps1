@@ -75,7 +75,7 @@ $ResolvedSystemPrompt = $null
 $SubscriptionMap = @{
     'msdn' = @{
         SubscriptionId     = 'e091f6e7-031a-4924-97bb-8c983ca5d21a'
-        TerraformWorkspace = 'default'
+        TerraformWorkspace = 'msdn'
         TfVarsFile         = 'msdn.tfvars'
     }
     'payg' = @{

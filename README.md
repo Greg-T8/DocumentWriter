@@ -28,6 +28,9 @@ DocumentWriter/
 │   ├── variables.tf
 │   ├── outputs.tf
 │   └── providers.tf
+│   ├── msdn.tfvars
+│   ├── payg.tfvars
+│   └── Invoke-TerraformWorkspace.ps1   # Workspace + subscription helper
 ├── input/                              # Place source .docx files here
 ├── output/                             # Revised documents are written here
 └── requirements.txt                    # Python dependencies
@@ -90,6 +93,7 @@ $deployment = terraform -chdir=terraform output -raw model_deployment_name
 .\scripts\Invoke-DocumentCommentary.ps1 `
     -DocumentPath "input\MyDocument.docx" `
     -Provider Azure `
+    -Subscription payg `
     -AzureEndpoint $endpoint `
     -AzureDeployment $deployment
 ```
@@ -100,6 +104,7 @@ $deployment = terraform -chdir=terraform output -raw model_deployment_name
 |-----------|----------|---------|-------------|
 | `-DocumentPath` | Yes | — | Path to the source `.docx` file |
 | `-Provider` | No | `GitHub` | `GitHub` or `Azure` |
+| `-Subscription` | No | `msdn` | Azure target subscription key: `msdn` or `payg` |
 | `-Model` | No | `openai/gpt-4o` | Model name (GitHub provider) |
 | `-AzureEndpoint` | Azure only | — | Azure OpenAI endpoint URL |
 | `-AzureDeployment` | Azure only | — | Azure OpenAI deployment name |
@@ -120,25 +125,52 @@ Customize this file to change the revision style, tone, or domain focus.
 
 ## Azure Infrastructure (Optional)
 
-The `terraform/` directory provisions an Azure AI Foundry account with a GPT-4o deployment for production use.
+The `terraform/` directory provisions an Azure AI Foundry account and supports isolated state per subscription using Terraform workspaces.
 
 ### Terraform Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `subscription_id` | — | Azure subscription ID |
 | `location` | `eastus` | Azure region |
 | `model_name` | `gpt-4o` | OpenAI model to deploy |
 | `model_version` | `2024-11-20` | Model version |
 | `model_capacity` | `10` | Throughput in thousands of tokens per minute |
 | `ai_services_sku` | `S0` | AI Services account SKU |
 
+Subscription IDs are managed in per-subscription variable files:
+
+| File | Subscription | ID |
+|------|--------------|----|
+| `msdn.tfvars` | `sub-tatelab-msdn` | `e091f6e7-031a-4924-97bb-8c983ca5d21a` |
+| `payg.tfvars` | `sub-tatelab-payg` | `e6ad7655-b3ba-4324-8361-fcfdc59973a5` |
+
 ### Deploy
 
 ```powershell
 cd terraform
+.\Invoke-TerraformWorkspace.ps1 -Subscription msdn -Action apply -Initialize
+
+# Deploy to PAYG subscription workspace/state
+.\Invoke-TerraformWorkspace.ps1 -Subscription payg -Action apply -Initialize
+```
+
+### Workspace Commands (manual)
+
+```powershell
+cd terraform
 terraform init
-terraform apply -var="subscription_id=<your-subscription-id>"
+
+# MSDN state (dedicated workspace)
+terraform workspace new msdn    # run once
+terraform workspace select msdn
+terraform plan  -var-file="msdn.tfvars"
+terraform apply -var-file="msdn.tfvars"
+
+# PAYG state (separate workspace)
+terraform workspace new payg    # run once
+terraform workspace select payg
+terraform plan  -var-file="payg.tfvars"
+terraform apply -var-file="payg.tfvars"
 ```
 
 After deployment, use the Terraform outputs to populate the Azure provider parameters:

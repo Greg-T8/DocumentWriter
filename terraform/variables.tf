@@ -50,6 +50,12 @@ variable "ai_services_sku" {
   }
 }
 
+variable "deploy_model" {
+  description = "Whether to deploy an Azure OpenAI model deployment"
+  type        = bool
+  default     = true
+}
+
 variable "model_name" {
   description = "OpenAI model name to deploy"
   type        = string

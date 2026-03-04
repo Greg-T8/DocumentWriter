@@ -40,6 +40,12 @@ resource "azurerm_resource_group" "main" {
   name     = local.resource_group_name
   location = var.location
   tags     = local.common_tags
+
+  lifecycle {
+    ignore_changes = [
+      tags,
+    ]
+  }
 }
 
 # =========================================================================
@@ -65,6 +71,12 @@ resource "azurerm_cognitive_account" "ai_foundry" {
   }
 
   tags = local.common_tags
+
+  lifecycle {
+    ignore_changes = [
+      tags,
+    ]
+  }
 }
 
 # =========================================================================
@@ -73,6 +85,8 @@ resource "azurerm_cognitive_account" "ai_foundry" {
 
 # Deploy GPT-4o with GlobalStandard SKU for production-grade throughput
 resource "azurerm_cognitive_deployment" "model" {
+  count = var.deploy_model ? 1 : 0
+
   name                 = var.model_name
   cognitive_account_id = azurerm_cognitive_account.ai_foundry.id
 
